@@ -57,6 +57,7 @@ export async function provisionCampaign(
   const configRows: string[][] = [
     ["key", "value"],
     ["campaignId", campaign.id],
+    ["status", "ACTIVE"],
     ["trackingBaseUrl", base],
     ["ingestUrl", base ? `${base}/api/ingest` : ""],
     ["ingestSecret", process.env.INGEST_SECRET ?? ""],

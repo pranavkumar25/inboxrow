@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
+import { getGoogleClientForUser } from "@/lib/google";
+import { updateConfigValue } from "@/lib/sheetSync";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -34,7 +36,7 @@ export async function PATCH(req: Request, { params }: Ctx) {
   const { id } = await params;
   const existing = await prisma.campaign.findFirst({
     where: { id, userId: session.user.id },
-    select: { id: true },
+    select: { id: true, spreadsheetId: true },
   });
   if (!existing) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
@@ -47,6 +49,22 @@ export async function PATCH(req: Request, { params }: Ctx) {
     where: { id },
     data: parsed.data,
   });
+
+  // Mirror status to the Sheet's Config so the Apps Script pauses / resumes.
+  if (parsed.data.status && existing.spreadsheetId) {
+    try {
+      const client = await getGoogleClientForUser(session.user.id);
+      await updateConfigValue(
+        client,
+        existing.spreadsheetId,
+        "status",
+        parsed.data.status,
+      );
+    } catch {
+      // best-effort; the DB remains the dashboard's source of truth
+    }
+  }
+
   return NextResponse.json(campaign);
 }
 

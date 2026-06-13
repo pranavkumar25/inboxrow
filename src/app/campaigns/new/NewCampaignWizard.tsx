@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Papa from "papaparse";
+import { RichTextEditor } from "@/components/RichTextEditor";
 
 type Role = "ignore" | "email" | "firstName" | "lastName" | "company" | "custom";
 type Condition = "NO_REPLY" | "NO_OPEN" | "ALWAYS";
@@ -334,28 +335,26 @@ export function NewCampaignWizard() {
                 onChange={(e) => setSubject(e.target.value)}
                 placeholder="Quick question, {{firstName}}"
               />
+              {mergeFields.length > 0 ? (
+                <p className="mt-1 text-xs text-neutral-500">
+                  Tags: {mergeFields.map((f) => `{{${f}}}`).join(", ")}
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-neutral-500">
+                  Upload contacts first to detect merge fields.
+                </p>
+              )}
             </div>
             <div>
-              <label className={label}>Body (HTML or plain text)</label>
-              <textarea
-                className={`${input} min-h-[200px] font-mono`}
-                value={bodyHtml}
-                onChange={(e) => setBodyHtml(e.target.value)}
-                placeholder={"Hi {{firstName}},\n\nI noticed {{company}} ...\n\nBest,\n{{fromName}}"}
-              />
-            </div>
-            <div className="text-xs text-neutral-500">
-              Merge tags available:{" "}
-              {mergeFields.length ? (
-                mergeFields.map((f) => (
-                  <code
-                    key={f}
-                    className="mr-1 rounded bg-neutral-100 px-1 py-0.5"
-                  >{`{{${f}}}`}</code>
-                ))
-              ) : (
-                <span>upload contacts first to detect fields</span>
-              )}
+              <label className={label}>Body</label>
+              <div className="mt-1">
+                <RichTextEditor
+                  value={bodyHtml}
+                  onChange={setBodyHtml}
+                  mergeFields={mergeFields}
+                  placeholder="Hi {{firstName}}, I noticed {{company}} ..."
+                />
+              </div>
             </div>
           </div>
         )}

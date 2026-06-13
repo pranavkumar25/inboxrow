@@ -49,6 +49,7 @@ function processQueue() {
     var cfg = getConfig_();
     var steps = getSteps_();
     if (!steps.length) return;
+    if (String(cfg.status || 'ACTIVE').toUpperCase() !== 'ACTIVE') return; // paused / completed
 
     var tz = cfg.timezone || Session.getScriptTimeZone();
     var now = new Date();
@@ -130,7 +131,8 @@ function sendOne_(cfg, step, row, col, header) {
     html = wrapLinks_(html, base, cfg.campaignId, cid);
     html += openPixel_(base, cfg.campaignId, cid, step.stepOrder);
   }
-  if (cfg.unsubscribeHtml) html += String(cfg.unsubscribeHtml);
+  if (base) html += unsubscribeFooter_(base, cfg.campaignId, cid, cfg.unsubscribeHtml);
+  else if (cfg.unsubscribeHtml) html += String(cfg.unsubscribeHtml);
 
   var options = { htmlBody: html };
   if (cfg.fromName) options.name = String(cfg.fromName);
@@ -181,8 +183,12 @@ function checkReplies() {
     var msgs = thread.getMessages();
     var contactEmail = String(row[col.email]).toLowerCase();
     var replied = false;
+    var bounced = false;
     for (var m = 0; m < msgs.length; m++) {
-      if (msgs[m].getFrom().toLowerCase().indexOf(contactEmail) !== -1) {
+      var from = msgs[m].getFrom().toLowerCase();
+      if (from.indexOf('mailer-daemon') !== -1 || from.indexOf('postmaster') !== -1) {
+        bounced = true;
+      } else if (from.indexOf(contactEmail) !== -1) {
         replied = true;
         break;
       }
@@ -190,6 +196,9 @@ function checkReplies() {
     if (replied) {
       setCell_(sh, r, col.status, 'REPLIED');
       postEvent_(cfg, { type: 'REPLY', contactId: row[col.contactId], email: row[col.email] });
+    } else if (bounced) {
+      setCell_(sh, r, col.status, 'BOUNCED');
+      postEvent_(cfg, { type: 'BOUNCE', contactId: row[col.contactId], email: row[col.email] });
     }
   }
 }
@@ -224,6 +233,15 @@ function openPixel_(base, campaignId, contactId, stepOrder) {
   return '<img src="' + base + '/api/track/open?c=' + encodeURIComponent(campaignId) +
     '&u=' + encodeURIComponent(contactId) + '&s=' + encodeURIComponent(stepOrder) +
     '" width="1" height="1" alt="" style="display:none">';
+}
+
+function unsubscribeFooter_(base, campaignId, contactId, customHtml) {
+  var link = base + '/api/unsubscribe?c=' + encodeURIComponent(campaignId) +
+    '&u=' + encodeURIComponent(contactId);
+  var extra = customHtml ? String(customHtml) + '<br>' : '';
+  return '<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;' +
+    'font-size:12px;color:#888">' + extra +
+    '<a href="' + link + '" style="color:#888">Unsubscribe</a></div>';
 }
 
 function stripHtml_(html) {

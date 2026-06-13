@@ -43,7 +43,7 @@ export async function recordTrackingEvent(opts: {
 export async function recordIngestEvent(body: {
   campaignId: string;
   contactId?: string | null;
-  type: "SENT" | "REPLY" | "FAILED";
+  type: "SENT" | "REPLY" | "FAILED" | "BOUNCE";
   stepOrder?: number | null;
   threadId?: string | null;
   error?: string | null;
@@ -73,6 +73,11 @@ export async function recordIngestEvent(body: {
     await prisma.contact.update({
       where: { id: contact.id },
       data: { status: "FAILED" },
+    });
+  } else if (body.type === "BOUNCE") {
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { status: "BOUNCED" },
     });
   } else if (body.type === "SENT") {
     if (!TERMINAL.includes(contact.status) && (RANK[contact.status] ?? 0) < RANK.SENT) {

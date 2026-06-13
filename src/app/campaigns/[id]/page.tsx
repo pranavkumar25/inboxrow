@@ -3,6 +3,8 @@ import { requireUser } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/db";
 import { Header } from "@/components/Header";
 import { ProvisionButton } from "./ProvisionButton";
+import { CampaignActions } from "./CampaignActions";
+import { EventsChart, type ChartPoint } from "./EventsChart";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +73,25 @@ export default async function CampaignDetail({
   const opened = openedRows.filter((r) => r.contactId).length;
   const clicked = clickedRows.filter((r) => r.contactId).length;
 
+  // Activity over the last 30 days, aggregated per day for the chart.
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const recentEvents = await prisma.event.findMany({
+    where: { campaignId: id, createdAt: { gte: since } },
+    select: { createdAt: true, type: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const byDay = new Map<string, ChartPoint>();
+  for (const e of recentEvents) {
+    const day = e.createdAt.toISOString().slice(0, 10);
+    const p =
+      byDay.get(day) ?? { date: day, SENT: 0, OPEN: 0, CLICK: 0, REPLY: 0 };
+    if (e.type === "SENT" || e.type === "OPEN" || e.type === "CLICK" || e.type === "REPLY") {
+      p[e.type] += 1;
+    }
+    byDay.set(day, p);
+  }
+  const chartData = Array.from(byDay.values());
+
   const sheetUrl = campaign.spreadsheetId
     ? `https://docs.google.com/spreadsheets/d/${campaign.spreadsheetId}`
     : null;
@@ -79,13 +100,18 @@ export default async function CampaignDetail({
     <>
       <Header />
       <main className="mx-auto max-w-5xl space-y-8 px-6 py-10">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">{campaign.name}</h1>
-          <p className="mt-1 text-sm text-neutral-500">
-            {campaign.status} · {total} contacts ·{" "}
-            {campaign.steps.length + 1}-step sequence ·{" "}
-            {campaign.fromAlias ? `from ${campaign.fromAlias}` : "from default"}
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">
+              {campaign.name}
+            </h1>
+            <p className="mt-1 text-sm text-neutral-500">
+              {campaign.status} · {total} contacts ·{" "}
+              {campaign.steps.length + 1}-step sequence ·{" "}
+              {campaign.fromAlias ? `from ${campaign.fromAlias}` : "from default"}
+            </p>
+          </div>
+          <CampaignActions campaignId={campaign.id} status={campaign.status} />
         </div>
 
         {/* Analytics */}
@@ -95,6 +121,14 @@ export default async function CampaignDetail({
           <Stat label="Click rate" value={`${pct(clicked, sent)}%`} sub={`${clicked} clicked`} />
           <Stat label="Reply rate" value={`${pct(replied, sent)}%`} sub={`${replied} replied`} />
           <Stat label="Queued" value={`${total - sent}`} />
+        </section>
+
+        {/* Activity chart */}
+        <section className="rounded-xl border border-neutral-200 bg-white p-6">
+          <h2 className="text-sm font-semibold">Activity (last 30 days)</h2>
+          <div className="mt-3">
+            <EventsChart data={chartData} />
+          </div>
         </section>
 
         {/* Provisioning */}

@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 const schema = z.object({
   campaignId: z.string(),
   contactId: z.string().nullable().optional(),
-  type: z.enum(["SENT", "REPLY", "FAILED"]),
+  type: z.enum(["SENT", "REPLY", "FAILED", "BOUNCE"]),
   email: z.string().optional(),
   stepOrder: z.union([z.number(), z.string()]).nullable().optional(),
   threadId: z.string().nullable().optional(),
