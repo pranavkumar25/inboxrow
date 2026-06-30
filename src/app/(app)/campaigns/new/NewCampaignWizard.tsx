@@ -97,6 +97,41 @@ function renderRow(template: string, lut: Record<string, string>): string {
   });
 }
 
+// ── Timezone + send-window scheduling ──────────────────────────────────────
+const FALLBACK_TZ = [
+  "UTC", "America/New_York", "America/Chicago", "America/Denver",
+  "America/Los_Angeles", "America/Sao_Paulo", "Europe/London", "Europe/Berlin",
+  "Europe/Paris", "Europe/Moscow", "Asia/Dubai", "Asia/Kolkata",
+  "Asia/Singapore", "Asia/Hong_Kong", "Asia/Tokyo", "Australia/Sydney",
+  "Pacific/Auckland",
+];
+
+// All IANA timezones when the runtime supports it, else a curated shortlist.
+// Always includes the passed-in current value so the <select> can show it.
+function listTimezones(current: string): string[] {
+  let zones: string[] = FALLBACK_TZ;
+  try {
+    const sv = (Intl as unknown as {
+      supportedValuesOf?: (key: string) => string[];
+    }).supportedValuesOf;
+    if (typeof sv === "function") {
+      const all = sv("timeZone");
+      if (all && all.length) zones = all;
+    }
+  } catch {
+    /* keep the curated fallback */
+  }
+  return zones.includes(current) ? zones : [current, ...zones];
+}
+
+// "9:00 AM", "5:00 PM", "12:00 AM" (midnight, incl. the hour-24 window end).
+function hourLabel(h: number): string {
+  if (h % 24 === 0) return "12:00 AM";
+  if (h === 12) return "12:00 PM";
+  const m = h % 12 || 12;
+  return `${m}:00 ${h < 12 ? "AM" : "PM"}`;
+}
+
 const input =
   "w-full rounded-lg border border-line bg-elevated px-3 py-2 text-sm text-ink placeholder:text-faint transition-colors focus:border-accent-500 focus:outline-none";
 const label = "block text-[13px] font-medium text-muted";
@@ -256,6 +291,8 @@ export function NewCampaignWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [composeMode, firstContact, subjectColumn, bodyColumn]);
 
+  const timezones = useMemo(() => listTimezones(timezone), [timezone]);
+
   const composeReady =
     composeMode === "single"
       ? subject.trim() !== "" && bodyHtml.trim() !== ""
@@ -412,35 +449,47 @@ export function NewCampaignWizard({
               </div>
             </div>
             <div>
-              <label className={label}>Timezone</label>
-              <input
+              <label className={label}>Timezone (controls the send schedule)</label>
+              <select
                 className={cn(input, "mt-1.5")}
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
-              />
+              >
+                {timezones.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className={label}>Send from (hour)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  className={cn(input, "mt-1.5 tabular-nums")}
+                <label className={label}>Send from</label>
+                <select
+                  className={cn(input, "mt-1.5")}
                   value={sendWindowStart}
                   onChange={(e) => setSendWindowStart(Number(e.target.value))}
-                />
+                >
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <option key={h} value={h}>
+                      {hourLabel(h)}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
-                <label className={label}>Send until (hour)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={24}
-                  className={cn(input, "mt-1.5 tabular-nums")}
+                <label className={label}>Send until</label>
+                <select
+                  className={cn(input, "mt-1.5")}
                   value={sendWindowEnd}
                   onChange={(e) => setSendWindowEnd(Number(e.target.value))}
-                />
+                >
+                  {Array.from({ length: 24 }, (_, i) => i + 1).map((h) => (
+                    <option key={h} value={h}>
+                      {hourLabel(h)}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className={label}>Daily cap</label>
@@ -453,6 +502,11 @@ export function NewCampaignWizard({
                 />
               </div>
             </div>
+            <p className="text-xs leading-relaxed text-faint">
+              The engine only sends between these hours in the selected
+              timezone — e.g. {hourLabel(sendWindowStart)}–
+              {hourLabel(sendWindowEnd)} {timezone.replace(/_/g, " ")}.
+            </p>
             <p className="text-xs leading-relaxed text-faint">
               Workspace sends ~1,500/day via Apps Script — the script also stops
               automatically when your Gmail quota is exhausted. Open/click
@@ -857,8 +911,11 @@ export function NewCampaignWizard({
             />
             <Row k="Contacts" v={`${contactCount}`} />
             <Row
-              k="Window"
-              v={`${sendWindowStart}:00–${sendWindowEnd}:00 ${timezone}, cap ${dailyCap}/day`}
+              k="Schedule"
+              v={`${hourLabel(sendWindowStart)}–${hourLabel(sendWindowEnd)} ${timezone.replace(
+                /_/g,
+                " ",
+              )}, cap ${dailyCap}/day`}
             />
             <Row k="Sequence" v={`Initial + ${followups.length} follow-up(s)`} />
             {composeMode === "single" ? (

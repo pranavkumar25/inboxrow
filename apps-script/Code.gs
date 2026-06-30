@@ -37,8 +37,8 @@ function installTriggers() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('processQueue').timeBased().everyMinutes(10).create();
-  ScriptApp.newTrigger('checkReplies').timeBased().everyMinutes(15).create();
+  ScriptApp.newTrigger('processQueue').timeBased().everyMinutes(5).create();
+  ScriptApp.newTrigger('checkReplies').timeBased().everyMinutes(5).create();
 }
 
 // ── Main queue processing ─────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import { ProvisionButton } from "./ProvisionButton";
 import { ResyncButton } from "./ResyncButton";
 import { CampaignActions } from "./CampaignActions";
 import { EventsChart, type ChartPoint } from "./EventsChart";
+import { AutoRefresh } from "./AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -114,6 +115,8 @@ export default async function CampaignDetail({
 
   return (
     <div className="space-y-6">
+      {/* Keep metrics live without a manual reload. */}
+      <AutoRefresh />
       <PageHeader
         title={campaign.name}
         actions={
