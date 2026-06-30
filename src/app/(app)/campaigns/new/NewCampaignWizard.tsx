@@ -19,11 +19,15 @@ import { Button, Card, cn } from "@/components/ui";
 
 type Role = "ignore" | "email" | "firstName" | "lastName" | "company" | "custom";
 type Condition = "NO_REPLY" | "NO_OPEN" | "ALWAYS";
+type ComposeMode = "single" | "perRecipient";
 type Followup = {
   delayDays: number;
   condition: Condition;
   subject: string;
   bodyHtml: string;
+  // Per-recipient mode: pull this follow-up's body from a CSV column instead of
+  // typing one shared body. "" = use the typed bodyHtml above.
+  bodyColumn: string;
 };
 
 const STEPS = ["Details", "Contacts", "Compose", "Follow-ups", "Review"];
@@ -35,6 +39,54 @@ function guessRole(header: string): Role {
   if (/last.?name|lname|surname/.test(h)) return "lastName";
   if (/company|organi[sz]ation|\borg\b|account/.test(h)) return "company";
   return "custom";
+}
+
+// ── Per-recipient column detection + merge rendering ───────────────────────
+// A header looks like a subject / body column when it (loosely) says so.
+const looksLikeSubject = (h: string) => /subject/i.test(h);
+const looksLikeBody = (h: string) => /(?:^|[_\s-])body|message|content|html/i.test(h);
+
+// Normalize a key so {{first_name}}, {{firstName}} and {{First Name}} all match.
+const normKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const ROLE_ALIASES: Record<"email" | "firstName" | "lastName" | "company", string[]> = {
+  email: ["email", "emailaddress"],
+  firstName: ["firstname", "first", "fname", "givenname"],
+  lastName: ["lastname", "last", "lname", "surname"],
+  company: ["company", "companyname", "organization", "organisation", "account"],
+};
+
+/**
+ * Build a normalized {{token}} → value lookup for one CSV row. Every raw header
+ * is addressable, and the mapped role columns also answer to their common
+ * aliases so a body that says {{first_name}} resolves a `firstName` column.
+ */
+function rowLookup(
+  row: Record<string, string>,
+  headers: string[],
+  mapping: Record<string, Role>,
+): Record<string, string> {
+  const lut: Record<string, string> = {};
+  for (const h of headers) {
+    const v = (row[h] ?? "").toString();
+    if (v) lut[normKey(h)] = v;
+  }
+  for (const h of headers) {
+    const role = mapping[h];
+    if (!role || role === "ignore" || role === "custom") continue;
+    const v = (row[h] ?? "").toString();
+    if (!v) continue;
+    for (const a of ROLE_ALIASES[role]) lut[a] = v;
+  }
+  return lut;
+}
+
+/** Fill {{tokens}} in a per-row template from its normalized lookup. */
+function renderRow(template: string, lut: Record<string, string>): string {
+  return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key: string) => {
+    const v = lut[normKey(key)];
+    return v != null ? v : "";
+  });
 }
 
 const input =
@@ -69,8 +121,12 @@ export function NewCampaignWizard({
   const [mapping, setMapping] = useState<Record<string, Role>>({});
 
   // Step 2 — compose
+  const [composeMode, setComposeMode] = useState<ComposeMode>("single");
   const [subject, setSubject] = useState(initial?.subject ?? "");
   const [bodyHtml, setBodyHtml] = useState(initial?.bodyHtml ?? "");
+  // Per-recipient mode: which CSV column holds each contact's subject / HTML body.
+  const [subjectColumn, setSubjectColumn] = useState("");
+  const [bodyColumn, setBodyColumn] = useState("");
 
   // Step 3 — follow-ups
   const [followups, setFollowups] = useState<Followup[]>([]);
@@ -101,6 +157,15 @@ export function NewCampaignWizard({
         setCsvHeaders(headers);
         setCsvRows(res.data);
         setMapping(m);
+
+        // Detect per-recipient subject/body columns (e.g. email_1_subject,
+        // email_1_body). If both exist, default to per-recipient compose since
+        // the file already carries per-row copy.
+        const subjGuess = headers.find(looksLikeSubject) ?? "";
+        const bodyGuess = headers.find(looksLikeBody) ?? "";
+        setSubjectColumn(subjGuess);
+        setBodyColumn(bodyGuess);
+        setComposeMode(subjGuess && bodyGuess ? "perRecipient" : "single");
       },
     });
   }
@@ -117,6 +182,20 @@ export function NewCampaignWizard({
         if (role === "custom") fields[h] = val;
         else c[role] = val;
       }
+      // Per-recipient mode: render each contact's own subject + body (and any
+      // per-recipient follow-up bodies) now, so they ship as ready-to-send HTML
+      // in fields.__subject / __body / __stepNBody. The campaign template just
+      // points at those tokens; the sending engine substitutes them verbatim.
+      if (composeMode === "perRecipient" && c.email) {
+        const lut = rowLookup(row, csvHeaders, mapping);
+        if (subjectColumn) fields.__subject = renderRow(row[subjectColumn] ?? "", lut);
+        if (bodyColumn) fields.__body = renderRow(row[bodyColumn] ?? "", lut);
+        followups.forEach((f, i) => {
+          if (f.bodyColumn) {
+            fields[`__step${i + 1}Body`] = renderRow(row[f.bodyColumn] ?? "", lut);
+          }
+        });
+      }
       if (c.email) {
         if (Object.keys(fields).length) c.fields = fields;
         out.push(c);
@@ -128,13 +207,30 @@ export function NewCampaignWizard({
   const contactCount = useMemo(
     () => (emailMapped ? buildContacts().length : 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [csvRows, mapping, emailMapped],
+    [csvRows, mapping, emailMapped, composeMode, subjectColumn, bodyColumn, followups],
   );
+
+  // Live preview of how the first contact's email renders in per-recipient mode.
+  const preview = useMemo(() => {
+    if (composeMode !== "perRecipient") return null;
+    const row = csvRows.find((r) => (r[csvHeaders.find((h) => mapping[h] === "email") ?? ""] ?? "").trim());
+    if (!row) return null;
+    const lut = rowLookup(row, csvHeaders, mapping);
+    return {
+      subject: subjectColumn ? renderRow(row[subjectColumn] ?? "", lut) : "",
+      body: bodyColumn ? renderRow(row[bodyColumn] ?? "", lut) : "",
+    };
+  }, [composeMode, csvRows, csvHeaders, mapping, subjectColumn, bodyColumn]);
+
+  const composeReady =
+    composeMode === "single"
+      ? subject.trim() !== "" && bodyHtml.trim() !== ""
+      : subjectColumn !== "" && bodyColumn !== "";
 
   const canNext =
     (step === 0 && name.trim().length > 0) ||
     (step === 1 && emailMapped && contactCount > 0) ||
-    (step === 2 && subject.trim() !== "" && bodyHtml.trim() !== "") ||
+    (step === 2 && composeReady) ||
     step === 3 ||
     step === 4;
 
@@ -143,6 +239,7 @@ export function NewCampaignWizard({
   async function submit() {
     setError(null);
     setPhase("creating");
+    const perRecipient = composeMode === "perRecipient";
     const payload = {
       name,
       fromName: fromName || null,
@@ -151,13 +248,18 @@ export function NewCampaignWizard({
       sendWindowStart,
       sendWindowEnd,
       dailyCap,
-      subject,
-      bodyHtml,
-      steps: followups.map((f) => ({
+      // In per-recipient mode the campaign template just points at the merge
+      // tokens we rendered per contact; the engine substitutes them verbatim.
+      subject: perRecipient ? "{{__subject}}" : subject,
+      bodyHtml: perRecipient ? "{{__body}}" : bodyHtml,
+      steps: followups.map((f, i) => ({
         delayDays: f.delayDays,
         condition: f.condition,
         subject: f.subject || null,
-        bodyHtml: f.bodyHtml || null,
+        bodyHtml:
+          perRecipient && f.bodyColumn
+            ? `{{__step${i + 1}Body}}`
+            : f.bodyHtml || null,
       })),
       contacts: buildContacts(),
     };
@@ -346,6 +448,20 @@ export function NewCampaignWizard({
               />
             </label>
 
+            <p className="text-xs text-faint">
+              To send a different subject &amp; body to each person, include
+              per-recipient columns (e.g. <code className="font-mono">email_1_subject</code>,{" "}
+              <code className="font-mono">email_1_body</code>) and pick them in
+              the Compose step.{" "}
+              <a
+                href="/samples/per-recipient-template.csv"
+                download
+                className="font-medium text-accent-600 hover:underline"
+              >
+                Download sample CSV
+              </a>
+            </p>
+
             {csvHeaders.length > 0 && (
               <>
                 <p className="text-sm text-muted tabular-nums">
@@ -402,31 +518,135 @@ export function NewCampaignWizard({
 
         {step === 2 && (
           <div className="space-y-4">
-            <div>
-              <label className={label}>Subject</label>
-              <input
-                className={cn(input, "mt-1.5")}
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="Quick question, {{firstName}}"
-              />
-              <p className="mt-1.5 text-xs text-faint">
-                {mergeFields.length > 0
-                  ? `Tags: ${mergeFields.map((f) => `{{${f}}}`).join(", ")}`
-                  : "Upload contacts first to detect merge fields."}
+            {/* Mode toggle: one shared email vs. per-recipient columns. */}
+            <div className="inline-flex rounded-lg border border-line bg-canvas p-0.5">
+              {(
+                [
+                  ["single", "Write one email"],
+                  ["perRecipient", "Personalize from CSV"],
+                ] as [ComposeMode, string][]
+              ).map(([mode, labelText]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setComposeMode(mode)}
+                  className={cn(
+                    "rounded-[7px] px-3 py-1.5 text-[13px] font-medium transition-colors",
+                    composeMode === mode
+                      ? "bg-accent text-white shadow-glow-sm"
+                      : "text-muted hover:text-ink",
+                  )}
+                >
+                  {labelText}
+                </button>
+              ))}
+            </div>
+
+            {composeMode === "single" ? (
+              <>
+                <div>
+                  <label className={label}>Subject</label>
+                  <input
+                    className={cn(input, "mt-1.5")}
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    placeholder="Quick question, {{firstName}}"
+                  />
+                  <p className="mt-1.5 text-xs text-faint">
+                    {mergeFields.length > 0
+                      ? `Tags: ${mergeFields.map((f) => `{{${f}}}`).join(", ")}`
+                      : "Upload contacts first to detect merge fields."}
+                  </p>
+                </div>
+                <div>
+                  <label className={label}>Body</label>
+                  <div className="mt-1.5">
+                    <RichTextEditor
+                      value={bodyHtml}
+                      onChange={setBodyHtml}
+                      mergeFields={mergeFields}
+                      placeholder="Hi {{firstName}}, I noticed {{company}} ..."
+                    />
+                  </div>
+                </div>
+              </>
+            ) : csvHeaders.length === 0 ? (
+              <p className="flex items-center gap-1.5 text-sm text-amber-700">
+                <ExclamationTriangleIcon className="h-4 w-4" strokeWidth={2} />
+                Upload a CSV in the Contacts step to pick subject &amp; body
+                columns.
               </p>
-            </div>
-            <div>
-              <label className={label}>Body</label>
-              <div className="mt-1.5">
-                <RichTextEditor
-                  value={bodyHtml}
-                  onChange={setBodyHtml}
-                  mergeFields={mergeFields}
-                  placeholder="Hi {{firstName}}, I noticed {{company}} ..."
-                />
-              </div>
-            </div>
+            ) : (
+              <>
+                <p className="text-sm text-muted">
+                  Each recipient gets the subject and body from their own row.
+                  HTML tags in the body (<code className="font-mono text-[12px]">&lt;p&gt;</code>,{" "}
+                  <code className="font-mono text-[12px]">&lt;br&gt;</code>,{" "}
+                  <code className="font-mono text-[12px]">&lt;a&gt;</code>) render as
+                  formatting, and tokens like{" "}
+                  <code className="font-mono text-[12px]">{"{{first_name}}"}</code> are
+                  filled from each row.
+                </p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className={label}>Subject column</label>
+                    <select
+                      className={cn(input, "mt-1.5")}
+                      value={subjectColumn}
+                      onChange={(e) => setSubjectColumn(e.target.value)}
+                    >
+                      <option value="">Select a column…</option>
+                      {csvHeaders.map((h) => (
+                        <option key={h} value={h}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={label}>Body column (HTML)</label>
+                    <select
+                      className={cn(input, "mt-1.5")}
+                      value={bodyColumn}
+                      onChange={(e) => setBodyColumn(e.target.value)}
+                    >
+                      <option value="">Select a column…</option>
+                      {csvHeaders.map((h) => (
+                        <option key={h} value={h}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {preview && (
+                  <div className="space-y-2 rounded-lg border border-line bg-canvas p-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-faint">
+                      Preview · first contact
+                    </p>
+                    <p className="text-sm">
+                      <span className="text-muted">Subject: </span>
+                      <span className="font-medium text-ink">
+                        {preview.subject || (
+                          <span className="text-faint">(empty)</span>
+                        )}
+                      </span>
+                    </p>
+                    {preview.body ? (
+                      <div
+                        className="prose-email max-h-64 overflow-auto rounded-md border border-line bg-surface px-3 py-2 text-ink"
+                        dangerouslySetInnerHTML={{ __html: preview.body }}
+                      />
+                    ) : (
+                      <p className="text-sm text-faint">
+                        Pick a body column to preview.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -511,21 +731,45 @@ export function NewCampaignWizard({
                     }
                   />
                 </div>
-                <div>
-                  <label className={label}>Body</label>
-                  <textarea
-                    className={cn(input, "mt-1.5 min-h-[120px] font-mono")}
-                    value={f.bodyHtml}
-                    onChange={(e) =>
-                      setFollowups((fs) =>
-                        fs.map((x, j) =>
-                          j === i ? { ...x, bodyHtml: e.target.value } : x,
-                        ),
-                      )
-                    }
-                    placeholder="Just bumping this up, {{firstName}}."
-                  />
-                </div>
+                {composeMode === "perRecipient" ? (
+                  <div>
+                    <label className={label}>Body column (HTML, per recipient)</label>
+                    <select
+                      className={cn(input, "mt-1.5")}
+                      value={f.bodyColumn}
+                      onChange={(e) =>
+                        setFollowups((fs) =>
+                          fs.map((x, j) =>
+                            j === i ? { ...x, bodyColumn: e.target.value } : x,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">Select a column…</option>
+                      {csvHeaders.map((h) => (
+                        <option key={h} value={h}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <label className={label}>Body</label>
+                    <textarea
+                      className={cn(input, "mt-1.5 min-h-[120px] font-mono")}
+                      value={f.bodyHtml}
+                      onChange={(e) =>
+                        setFollowups((fs) =>
+                          fs.map((x, j) =>
+                            j === i ? { ...x, bodyHtml: e.target.value } : x,
+                          ),
+                        )
+                      }
+                      placeholder="Just bumping this up, {{firstName}}."
+                    />
+                  </div>
+                )}
               </div>
             ))}
             <Button
@@ -533,7 +777,13 @@ export function NewCampaignWizard({
               onClick={() =>
                 setFollowups((fs) => [
                   ...fs,
-                  { delayDays: 3, condition: "NO_REPLY", subject: "", bodyHtml: "" },
+                  {
+                    delayDays: 3,
+                    condition: "NO_REPLY",
+                    subject: "",
+                    bodyHtml: "",
+                    bodyColumn: "",
+                  },
                 ])
               }
             >
@@ -556,7 +806,15 @@ export function NewCampaignWizard({
               v={`${sendWindowStart}:00–${sendWindowEnd}:00 ${timezone}, cap ${dailyCap}/day`}
             />
             <Row k="Sequence" v={`Initial + ${followups.length} follow-up(s)`} />
-            <Row k="Subject" v={subject} />
+            {composeMode === "single" ? (
+              <Row k="Subject" v={subject} />
+            ) : (
+              <>
+                <Row k="Personalization" v="Per recipient, from CSV columns" />
+                <Row k="Subject column" v={subjectColumn} />
+                <Row k="Body column" v={bodyColumn} />
+              </>
+            )}
             {error && (
               <p className="flex items-center gap-1.5 pt-3 text-sm text-rose-300">
                 <ExclamationTriangleIcon className="h-4 w-4" strokeWidth={2} />
