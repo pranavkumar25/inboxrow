@@ -39,6 +39,10 @@ export function campaignConfigRows(
     ["sendWindowStart", String(campaign.sendWindowStart)],
     ["sendWindowEnd", String(campaign.sendWindowEnd)],
     ["dailyCap", String(campaign.dailyCap)],
+    // Open/click tracking is off by default for inbox placement. Flip a value to
+    // "true" in the Sheet's Config tab to re-enable tracking for that campaign.
+    ["trackOpens", "false"],
+    ["trackClicks", "false"],
     ["unsubscribeHtml", campaign.unsubscribeHtml ?? ""],
     ["defaultSubject", campaign.subject],
     ["defaultBodyHtml", campaign.bodyHtml],

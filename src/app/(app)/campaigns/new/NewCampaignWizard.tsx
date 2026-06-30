@@ -455,7 +455,9 @@ export function NewCampaignWizard({
             </div>
             <p className="text-xs leading-relaxed text-faint">
               Workspace sends ~1,500/day via Apps Script — the script also stops
-              automatically when your Gmail quota is exhausted.
+              automatically when your Gmail quota is exhausted. Open/click
+              tracking is off by default so personal-style Gmail-to-Gmail
+              outreach stays out of spam.
             </p>
           </div>
         )}

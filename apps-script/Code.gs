@@ -127,8 +127,13 @@ function sendOne_(cfg, step, row, col, header) {
 
   var base = cfg.trackingBaseUrl;
   var cid = row[col.contactId];
-  if (base) {
+  // Open/click tracking is opt-in. A tracking pixel and links rewritten through
+  // a redirect domain are strong spam/phishing signals — especially for
+  // personal-looking Gmail→Gmail mail — so they're only added when enabled.
+  if (base && String(cfg.trackClicks) === 'true') {
     html = wrapLinks_(html, base, cfg.campaignId, cid);
+  }
+  if (base && String(cfg.trackOpens) === 'true') {
     html += openPixel_(base, cfg.campaignId, cid, step.stepOrder);
   }
   // No default unsubscribe footer — only append a block the campaign explicitly
